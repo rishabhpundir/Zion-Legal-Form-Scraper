@@ -189,12 +189,25 @@ def main():
             timeout=CONFIG['timeout'],
             args=["--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"]
         )
+
         context = browser.new_context(viewport=CONFIG['viewport'])
         page = context.new_page()
+        
         try:
             page.goto("https://www.rocketlawyer.com/all-documents", timeout=CONFIG['timeout'])
+            
+            # Handle cookie consent banner
+            try:
+                # Wait for cookie banner to appear and click Accept
+                page.wait_for_selector('#onetrust-accept-btn-handler', timeout=5000)
+                page.click('#onetrust-accept-btn-handler')
+                print("✅ Cookie consent accepted")
+                # Give it a moment to process
+                time.sleep(3)
+            except:
+                print("ℹ️ No cookie banner found or already accepted")    
+                        
             page.wait_for_selector('div.sitemap-section', timeout=CONFIG['timeout'])
-
             links = page.query_selector_all('div.sitemap-section ul.sitemap-section-links li a')
             document_urls = [f"https://www.rocketlawyer.com{link.get_attribute('href')}" for link in links]
 
