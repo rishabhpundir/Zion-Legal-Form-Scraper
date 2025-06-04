@@ -177,7 +177,7 @@ def scrape_document(page, url, index, output_dir):
         except:
             pass
 
-        # zip_folder_and_cleanup(form_folder)
+        zip_folder_and_cleanup(form_folder)
 
         return {
             "link_name": url_name,
