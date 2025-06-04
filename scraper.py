@@ -1,16 +1,29 @@
 import os
+import sys
 import time
 import json
 import random
 import zipfile
-import pytesseract
+import logging
 import pandas as pd
-from PIL import Image
 from docx import Document
 from bs4 import BeautifulSoup
 from datetime import datetime
-from docx.enum.text import WD_COLOR_INDEX
 from playwright.sync_api import sync_playwright
+
+
+# Configure logging
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(LOGS, exist_ok=True)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS, f"log_{timestamp}.log"), mode='w'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 
 CONFIG = {
@@ -22,40 +35,23 @@ CONFIG = {
 }
 
 
-def crop_screenshot_to_text_bottom(raw_image_path, output_path, buffer_pixels=280):
-    img = Image.open(raw_image_path)
-    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-
-    bottom_coords = [
-        data['top'][i] + data['height'][i]
-        for i in range(len(data['text']))
-        if int(data['conf'][i]) > 30
-    ]
-
-    if not bottom_coords:
-        return  # No text found; skip cropping
-
-    max_y = min(max(bottom_coords) + buffer_pixels, img.height)
-    cropped_img = img.crop((0, 0, img.width, max_y))
-    cropped_img.save(output_path)
-    # if os.path.exists(raw_image_path):
-    #     os.remove(raw_image_path)
-
-
 def setup_output_directory():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f"Documents"
     os.makedirs(output_dir, exist_ok=True)
     return output_dir, timestamp
 
+
 def clean_text(text):
     return ' '.join(text.strip().split()) if text else ""
+
 
 def take_full_page_screenshot(page, filename):
     viewport_width = page.viewport_size['width']
     total_height = page.evaluate("() => document.body.scrollHeight")
     page.set_viewport_size({'width': viewport_width, 'height': total_height})
     page.locator("#documentWrap").screenshot(path=filename)
+
 
 def zip_folder_and_cleanup(folder_path):
     zip_path = f"{folder_path}.zip"
@@ -71,17 +67,14 @@ def zip_folder_and_cleanup(folder_path):
         for name in dirs:
             os.rmdir(os.path.join(root, name))
     os.rmdir(folder_path)
-    print(f"Zipped and cleaned up: {zip_path}")
-
-def highlight_run(run, color=WD_COLOR_INDEX.YELLOW, bold=True):
-    run.bold = bold
-    run.font.highlight_color = color
+    logging.info(f"Zipped and cleaned up: {zip_path}")
+    
 
 def scrape_document(page, url, index, output_dir):
     url_name = url['name'].replace(" ", "_")
     url_link = url['url']
     try:
-        print(f"\nProcessing document {index}: {url_name}")
+        logging.info(f"Processing document {index}: {url_name}")
 
         for attempt in range(CONFIG['retry_attempts']):
             try:
@@ -91,7 +84,7 @@ def scrape_document(page, url, index, output_dir):
             except Exception as e:
                 if attempt == CONFIG['retry_attempts'] - 1:
                     raise e
-                print(f"Retry {attempt + 1} for {url_name}")
+                logging.info(f"Retry {attempt + 1} for {url_name}")
                 time.sleep(2)
 
         form_folder = os.path.join(output_dir, url_name)
@@ -106,10 +99,8 @@ def scrape_document(page, url, index, output_dir):
         page.wait_for_selector("#documentWrap", timeout=40000)
 
         time.sleep(3)
-        org_screenshot_path = os.path.join(form_folder, f"{url_name}_raw.png")
         screenshot_path = os.path.join(form_folder, f"{url_name}.png")
-        take_full_page_screenshot(page, org_screenshot_path)
-        crop_screenshot_to_text_bottom(org_screenshot_path, screenshot_path)
+        take_full_page_screenshot(page, screenshot_path)
 
         definitions = []
 
@@ -121,7 +112,7 @@ def scrape_document(page, url, index, output_dir):
             for q, a in zip(questions, answers):
                 definitions.append({"question": clean_text(q.get_text()), "answer": clean_text(a.get_text())})
         except Exception as e:
-            print(f"Error scraping definitions: {str(e)}")
+            logging.info(f"Error scraping definitions: {str(e)}")
 
         try:
             if page.query_selector("section#seoFaqSection"):
@@ -137,7 +128,7 @@ def scrape_document(page, url, index, output_dir):
                             "answer": clean_text(a_div.get_text(separator="\n"))
                         })
         except Exception as e:
-            print(f"Error scraping FAQs: {str(e)}")
+            logging.info(f"Error scraping FAQs: {str(e)}")
 
         # --- Breadcrumb Extraction ---
         breadcrumb = ""
@@ -147,7 +138,7 @@ def scrape_document(page, url, index, output_dir):
             crumbs = breadcrumb_soup.select("li.breadcrumb span[property='name']")
             breadcrumb = " > ".join([clean_text(c.get_text()) for c in crumbs])
         except Exception as e:
-            print(f"Error extracting breadcrumb: {str(e)}")
+            logging.info(f"Error extracting breadcrumb: {str(e)}")
 
         # --- Trust Copy Extraction ---
         trust_text = ""
@@ -156,7 +147,7 @@ def scrape_document(page, url, index, output_dir):
             if trust_span:
                 trust_text = trust_span.inner_text().strip()
         except Exception as e:
-            print(f"Error extracting trust message: {str(e)}")
+            logging.info(f"Error extracting trust message: {str(e)}")
 
         # --- Generate DOCX ---
         docx_path = os.path.join(form_folder, f"{url_name}_Writer.docx")
@@ -166,13 +157,11 @@ def scrape_document(page, url, index, output_dir):
         if breadcrumb:
             p = doc.add_paragraph()
             run = p.add_run(breadcrumb)
-            highlight_run(run)
 
         # Trust Message
         if trust_text:
             p = doc.add_paragraph()
             run = p.add_run(trust_text)
-            highlight_run(run)
 
         doc.add_heading(form_title or url_name, 0)
 
@@ -198,7 +187,7 @@ def scrape_document(page, url, index, output_dir):
         }
 
     except Exception as e:
-        print(f"Failed to process {url}: {str(e)}")
+        logging.info(f"Failed to process {url}: {str(e)}")
         return None
 
 def main():
@@ -221,11 +210,11 @@ def main():
                 # Wait for cookie banner to appear and click Accept
                 page.wait_for_selector('#onetrust-accept-btn-handler', timeout=5000)
                 page.click('#onetrust-accept-btn-handler')
-                print("✅ Cookie consent accepted")
+                logging.info("✅ Cookie consent accepted")
                 # Give it a moment to process
                 time.sleep(3)
             except:
-                print("ℹ️ No cookie banner found or already accepted")    
+                logging.info("ℹ️ No cookie banner found or already accepted")    
                         
             page.wait_for_selector('div.sitemap-section', timeout=CONFIG['timeout'])
             links = page.query_selector_all('div.sitemap-section ul.sitemap-section-links li a')
@@ -243,9 +232,9 @@ def main():
                     document_data = scrape_document(page, doc[1], doc[0], output_dir)
                     if document_data:
                         all_data.append(document_data)
-                        print(f"\n✅ Completed: {document_data['form_title']}")
+                        logging.info(f"✅ Completed: {document_data['form_title']}")
                     else:
-                        print(f"\n❌ Skipped : {doc[1]['url']}")
+                        logging.info(f"❌ Skipped : {doc[1]['url']}")
                     time.sleep(CONFIG['delay_between_forms'])
 
                 if all_data:
@@ -255,7 +244,7 @@ def main():
                         "ZIP File": doc["docx_file"]
                     } for doc in all_data])
                     df.to_csv(os.path.join(output_dir, "Summary.csv"), index=False)
-                    print(f"\n✅ All documents scraped and zipped. Summary saved in '{output_dir}'")
+            logging.info(f"✅ All documents scraped and zipped. Summary saved in '{output_dir}'")
 
         finally:
             page.close()
@@ -268,12 +257,20 @@ def document_generator(filepath):
         data = json.load(f)
 
     for i, item in enumerate(data, 1):
-        print(f"{i}. {item['name']} -> {item['url']}")
+        logging.info(f"{i}. {item['name']} -> {item['url']}")
         yield (i, item)
         item["status"] = "done"
 
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
+        logging.info("*" * 50)
+        
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logging.exception("An error occured : \n")  
+    finally:
+        logging.info("Exiting...")
+        

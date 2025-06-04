@@ -196,3 +196,8 @@ cython_debug/
 venv/
 Documents/
 .DS_Store
+*.json
+.packaging
+*.docx
+logs/
+
