@@ -98,7 +98,7 @@ def scrape_document(page, url, index, output_dir):
         page.click("button.expand-button", timeout=30000, force=True)
         page.wait_for_selector("#documentWrap", timeout=40000)
 
-        time.sleep(3)
+        time.sleep(10)
         screenshot_path = os.path.join(form_folder, f"{url_name}.png")
         take_full_page_screenshot(page, screenshot_path)
 
@@ -218,6 +218,7 @@ def main():
                         
             page.wait_for_selector('div.sitemap-section', timeout=CONFIG['timeout'])
             links = page.query_selector_all('div.sitemap-section ul.sitemap-section-links li a')
+
             document_urls = [{"name":link.text_content(), "url": f"https://www.rocketlawyer.com{link.get_attribute('href')}", 'status': ''} for link in links]
             
             if not os.path.exists("documents.json"):
