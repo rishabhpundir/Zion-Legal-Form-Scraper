@@ -6,6 +6,7 @@ import random
 import zipfile
 import logging
 import pandas as pd
+from PIL import Image
 from docx import Document
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -15,6 +16,7 @@ from playwright.sync_api import sync_playwright
 # Configure logging
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+FILEPATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'documents.json')
 os.makedirs(LOGS, exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
@@ -34,6 +36,8 @@ CONFIG = {
     'viewport': {'width': 1280, 'height': 1280}
 }
 
+def set_timesleep(a=3, b=5):
+    return random.uniform(a, b)
 
 def setup_output_directory():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -47,10 +51,21 @@ def clean_text(text):
 
 
 def take_full_page_screenshot(page, filename):
-    viewport_width = page.viewport_size['width']
-    total_height = page.evaluate("() => document.body.scrollHeight")
-    page.set_viewport_size({'width': viewport_width, 'height': total_height})
-    page.locator("#documentWrap").screenshot(path=filename)
+    height = 0
+    try:
+        viewport_width = page.viewport_size['width']
+        total_height = page.evaluate("() => document.body.scrollHeight")
+        page.set_viewport_size({'width': viewport_width, 'height': total_height})
+        page.locator("#documentWrap").screenshot(path=filename)
+        
+        if os.path.exists(filename):
+            with Image.open(filename) as img:
+                width, height = img.size
+                print(f"Screenshot dimensions: width={width}, height={height}")
+    except Exception as e:
+        pass
+    finally:
+        return height
 
 
 def zip_folder_and_cleanup(folder_path):
@@ -95,12 +110,12 @@ def scrape_document(page, url, index, output_dir):
                    document.title.split('|')[0].trim();
         }""")
 
-        page.click("button.expand-button", timeout=30000, force=True)
-        page.wait_for_selector("#documentWrap", timeout=40000)
-
-        time.sleep(10)
+        page.wait_for_selector("button.expand-button", state="visible").click()
+        time.sleep(set_timesleep(a=1, b=2))
+        page.wait_for_selector("#documentWrap", timeout=90000)
+        time.sleep(set_timesleep())
         screenshot_path = os.path.join(form_folder, f"{url_name}.png")
-        take_full_page_screenshot(page, screenshot_path)
+        height = take_full_page_screenshot(page, screenshot_path)
 
         definitions = []
 
@@ -180,6 +195,7 @@ def scrape_document(page, url, index, output_dir):
         zip_folder_and_cleanup(form_folder)
 
         return {
+            "height": height,
             "link_name": url_name,
             "form_title": form_title,
             "docx_file": docx_path.replace(form_folder, f"{form_folder}.zip"),
@@ -212,7 +228,7 @@ def main():
                 page.click('#onetrust-accept-btn-handler')
                 logging.info("✅ Cookie consent accepted")
                 # Give it a moment to process
-                time.sleep(3)
+                time.sleep(set_timesleep(1, 2))
             except:
                 logging.info("ℹ️ No cookie banner found or already accepted")    
                         
@@ -221,22 +237,34 @@ def main():
 
             document_urls = [{"name":link.text_content(), "url": f"https://www.rocketlawyer.com{link.get_attribute('href')}", 'status': ''} for link in links]
             
-            if not os.path.exists("documents.json"):
-                with open("documents.json", "w", encoding="utf-8") as f:
+            if not os.path.exists(FILEPATH):
+                with open(FILEPATH, "w", encoding="utf-8") as f:
                     json.dump(document_urls, f, indent=4)
                 
             all_data = []
-            for doc in document_generator("documents.json"):
-                time.sleep(random.uniform(1, 2))
+            with open(FILEPATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
                 
-                if doc[1]['status'] != 'done':
-                    document_data = scrape_document(page, doc[1], doc[0], output_dir)
+            for index, doc in document_generator(data):
+                time.sleep(set_timesleep())
+                
+                if doc['status'] != 'done':
+                    document_data = scrape_document(page, doc, index, output_dir)
+                    
+                    if not document_data or int(document_data.get('height', 0)) <= 800:
+                        data[index-1]["status"] = "error"
+                    else:
+                        data[index-1]["status"] = "done"
+                        
+                    with open(f"status_{timestamp}.json", "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=4)
+                        
                     if document_data:
                         all_data.append(document_data)
                         logging.info(f"✅ Completed: {document_data['form_title']}")
                     else:
-                        logging.info(f"❌ Skipped : {doc[1]['url']}")
-                    time.sleep(CONFIG['delay_between_forms'])
+                        logging.info(f"❌ Skipped : {doc['url']}")
+                    time.sleep(set_timesleep())
 
                 if all_data:
                     df = pd.DataFrame([{
@@ -253,17 +281,10 @@ def main():
             browser.close()
             
             
-def document_generator(filepath):
-    with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
+def document_generator(data):
     for i, item in enumerate(data, 1):
         logging.info(f"{i}. {item['name']} -> {item['url']}")
         yield (i, item)
-        item["status"] = "done"
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
         logging.info("*" * 50)
         
 
